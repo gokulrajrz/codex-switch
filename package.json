@@ -38,7 +38,7 @@
     "test:integration:run": "vscode-test",
     "check": "npm run build && npm run build:test && npm run lint && npm run test:coverage:run",
     "check:release": "npm run check && npm run test:integration:run",
-    "vscode:package": "vsce package",
+    "vscode:package": "vsce package --no-dependencies",
     "vscode:publish": "vsce publish",
     "openvsx:publish": "npx ovsx publish",
     "watch": "tsc -watch -p ./"

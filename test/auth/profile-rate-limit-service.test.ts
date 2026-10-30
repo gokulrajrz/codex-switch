@@ -28,6 +28,7 @@ class FakeAppServer extends EventEmitter {
   constructor(
     private readonly behavior: {
       rateLimitsResult: unknown
+      rateLimitsError?: string
       autoRespondInitialize?: boolean
       autoRespondRateLimits?: boolean
       autoRespondShutdown?: boolean
@@ -58,6 +59,15 @@ class FakeAppServer extends EventEmitter {
     }
 
     request.responded = true
+    if (method === 'account/rateLimits/read' && this.behavior.rateLimitsError) {
+      this.stdout.write(
+        JSON.stringify({
+          id: request.id,
+          error: { code: -1, message: this.behavior.rateLimitsError },
+        }) + '\n',
+      )
+      return
+    }
     this.stdout.write(
       `${JSON.stringify({
         id: request.id,
@@ -436,4 +446,41 @@ test('ProfileRateLimitService cancels inflight work and removes temp auth cleanu
     path.basename(harness.rms[0] ?? ''),
     'codex-switch-rate-limits-1',
   )
+})
+
+test('usage query failure still persists rotated credentials before temporary-home cleanup', async () => {
+  const refreshed = makeAuth('profile-1')
+  refreshed.authJson!.tokens = {
+    id_token: 'rotated-id',
+    access_token: 'rotated-access',
+    refresh_token: 'rotated-refresh',
+  }
+  const harness = makeHarness(
+    {
+      rateLimitsResult: null,
+      rateLimitsError: 'synthetic request failure',
+      autoRespondInitialize: true,
+      autoRespondRateLimits: true,
+      autoRespondShutdown: true,
+    },
+    {
+      refreshedAuthContent: JSON.stringify(refreshed.authJson),
+    },
+  )
+  try {
+    const result = await harness.service.runProfileMaintenance(
+      harness.profileManager,
+      makeProfile('profile-1'),
+    )
+    assert.equal(result.status, 'failed')
+    assert.equal(harness.replaceCalls.length, 1)
+    assert.equal(
+      harness.replaceCalls[0].refreshed.refreshToken,
+      'rotated-refresh',
+    )
+    assert.equal(harness.reads.length, 1)
+    assert.equal(harness.rms.length, 1)
+  } finally {
+    await harness.service.dispose()
+  }
 })

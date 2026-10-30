@@ -201,94 +201,148 @@ test('syncCodexAuthFile writes atomically and leaves no temp file', () => {
   )
 })
 
-test('syncCodexAuthFile ignores cleanup failures after fallback copy', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-switch-auth-sync-'))
-  const authPath = path.join(dir, 'auth.json')
-  const originalRenameSync = fs.renameSync
-  const originalUnlinkSync = fs.unlinkSync
-
-  fs.renameSync = (() => {
-    throw new Error('rename failed')
-  }) as typeof fs.renameSync
-  fs.unlinkSync = (() => {
-    throw new Error('cleanup failed')
-  }) as typeof fs.unlinkSync
-
-  try {
-    syncCodexAuthFile(authPath, baseAuthData, {
-      now: () => 1234567890,
-    })
-    assert.equal(
-      fs.readFileSync(authPath, 'utf8'),
-      buildCodexAuthJson(baseAuthData),
+test(
+  'syncCodexAuthFile ignores cleanup failures after fallback copy',
+  { skip: process.platform !== 'win32' },
+  () => {
+    const dir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'codex-switch-auth-sync-'),
     )
-  } finally {
-    fs.renameSync = originalRenameSync
-    fs.unlinkSync = originalUnlinkSync
-  }
-})
+    const authPath = path.join(dir, 'auth.json')
+    const originalRenameSync = fs.renameSync
+    const originalUnlinkSync = fs.unlinkSync
 
-test('syncCodexAuthFile falls back to copy when rename fails', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-switch-auth-sync-'))
-  const authPath = path.join(dir, 'auth.json')
-  const originalRenameSync = fs.renameSync
+    fs.renameSync = (() => {
+      throw new Error('rename failed')
+    }) as typeof fs.renameSync
+    fs.unlinkSync = (() => {
+      throw new Error('cleanup failed')
+    }) as typeof fs.unlinkSync
 
-  fs.renameSync = (() => {
-    throw new Error('rename failed')
-  }) as typeof fs.renameSync
+    try {
+      syncCodexAuthFile(authPath, baseAuthData, {
+        now: () => 1234567890,
+      })
+      assert.equal(
+        fs.readFileSync(authPath, 'utf8'),
+        buildCodexAuthJson(baseAuthData),
+      )
+    } finally {
+      fs.renameSync = originalRenameSync
+      fs.unlinkSync = originalUnlinkSync
+    }
+  },
+)
 
-  try {
-    syncCodexAuthFile(authPath, baseAuthData, {
-      now: () => 1234567891,
-    })
-    assert.equal(
-      fs.readFileSync(authPath, 'utf8'),
-      buildCodexAuthJson(baseAuthData),
+test(
+  'syncCodexAuthFile falls back to copy when rename fails',
+  { skip: process.platform !== 'win32' },
+  () => {
+    const dir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'codex-switch-auth-sync-'),
     )
-    assert.deepEqual(
-      fs.readdirSync(dir).filter((entry) => entry.includes('.tmp.')),
-      [],
+    const authPath = path.join(dir, 'auth.json')
+    const originalRenameSync = fs.renameSync
+
+    fs.renameSync = (() => {
+      throw new Error('rename failed')
+    }) as typeof fs.renameSync
+
+    try {
+      syncCodexAuthFile(authPath, baseAuthData, {
+        now: () => 1234567891,
+      })
+      assert.equal(
+        fs.readFileSync(authPath, 'utf8'),
+        buildCodexAuthJson(baseAuthData),
+      )
+      assert.deepEqual(
+        fs.readdirSync(dir).filter((entry) => entry.includes('.tmp.')),
+        [],
+      )
+    } finally {
+      fs.renameSync = originalRenameSync
+    }
+  },
+)
+
+test(
+  'syncCodexAuthFile skips temp cleanup when the temp file is already gone',
+  { skip: process.platform !== 'win32' },
+  () => {
+    const dir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'codex-switch-auth-sync-'),
     )
-  } finally {
-    fs.renameSync = originalRenameSync
-  }
-})
+    const authPath = path.join(dir, 'auth.json')
+    const originalRenameSync = fs.renameSync
+    const originalExistsSync = fs.existsSync
+    const originalUnlinkSync = fs.unlinkSync
 
-test('syncCodexAuthFile skips temp cleanup when the temp file is already gone', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-switch-auth-sync-'))
-  const authPath = path.join(dir, 'auth.json')
-  const originalRenameSync = fs.renameSync
-  const originalExistsSync = fs.existsSync
-  const originalUnlinkSync = fs.unlinkSync
+    fs.renameSync = (() => {
+      throw new Error('rename failed')
+    }) as typeof fs.renameSync
+    fs.existsSync = ((filePath: fs.PathLike) => {
+      return String(filePath).includes('.tmp.')
+        ? false
+        : originalExistsSync(filePath)
+    }) as typeof fs.existsSync
 
-  fs.renameSync = (() => {
-    throw new Error('rename failed')
-  }) as typeof fs.renameSync
-  fs.existsSync = ((filePath: fs.PathLike) => {
-    return String(filePath).includes('.tmp.')
-      ? false
-      : originalExistsSync(filePath)
-  }) as typeof fs.existsSync
-
-  try {
-    syncCodexAuthFile(authPath, baseAuthData, {
-      now: () => 1234567892,
-    })
-    assert.equal(
-      fs.readFileSync(authPath, 'utf8'),
-      buildCodexAuthJson(baseAuthData),
-    )
-    const tempFiles = fs
-      .readdirSync(dir)
-      .filter((entry) => entry.includes('.tmp.'))
-    assert.equal(tempFiles.length, 1)
-  } finally {
-    fs.renameSync = originalRenameSync
-    fs.existsSync = originalExistsSync
-    for (const entry of fs.readdirSync(dir)) {
-      if (entry.includes('.tmp.')) {
-        originalUnlinkSync(path.join(dir, entry))
+    try {
+      syncCodexAuthFile(authPath, baseAuthData, {
+        now: () => 1234567892,
+      })
+      assert.equal(
+        fs.readFileSync(authPath, 'utf8'),
+        buildCodexAuthJson(baseAuthData),
+      )
+      const tempFiles = fs
+        .readdirSync(dir)
+        .filter((entry) => entry.includes('.tmp.'))
+      assert.equal(tempFiles.length, 1)
+    } finally {
+      fs.renameSync = originalRenameSync
+      fs.existsSync = originalExistsSync
+      for (const entry of fs.readdirSync(dir)) {
+        if (entry.includes('.tmp.')) {
+          originalUnlinkSync(path.join(dir, entry))
+        }
       }
     }
-  }
-})
+  },
+)
+
+test(
+  'POSIX live auth replacement preserves private permissions and propagates rename errors',
+  { skip: process.platform === 'win32' },
+  () => {
+    const dir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'codex-switch-private-auth-'),
+    )
+    const authPath = path.join(dir, 'new-home', 'auth.json')
+    const mask = process.umask(0o022)
+    const rename = fs.renameSync
+    try {
+      syncCodexAuthFile(authPath, baseAuthData)
+      assert.equal(fs.statSync(path.dirname(authPath)).mode & 0o777, 0o700)
+      assert.equal(fs.statSync(authPath).mode & 0o777, 0o600)
+      const before = fs.readFileSync(authPath, 'utf8')
+      fs.renameSync = (() => {
+        throw new Error('permission denied')
+      }) as typeof fs.renameSync
+      assert.throws(
+        () =>
+          syncCodexAuthFile(authPath, {
+            ...baseAuthData,
+            accessToken: 'changed',
+          }),
+        /permission denied/,
+      )
+      assert.equal(fs.readFileSync(authPath, 'utf8'), before)
+      assert.deepEqual(fs.readdirSync(path.dirname(authPath)), ['auth.json'])
+    } finally {
+      process.umask(mask)
+      fs.renameSync = rename
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  },
+)

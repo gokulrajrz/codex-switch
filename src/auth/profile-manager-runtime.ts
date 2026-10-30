@@ -1,8 +1,13 @@
 import type * as vscode from 'vscode'
+import { withProfilesFileLock } from '../utils/profiles-file-lock'
 import { StorageMode } from '../types'
 import { CodexHomeManager } from '../codex-home/codex-home-manager'
 import { loadAuthDataFromFile } from './auth-manager'
-import { buildCodexAuthJson, syncCodexAuthFile } from './codex-auth-sync'
+import {
+  buildCodexAuthJson,
+  syncCodexAuthFile,
+  syncCodexAuthContent,
+} from './codex-auth-sync'
 import { resolveStorageMode } from '../utils/storage-mode'
 import { ProfileAuthFileService } from './profile-auth-file-service'
 import { ProfileAuthRecoveryService } from './profile-auth-recovery-service'
@@ -98,6 +103,12 @@ export class ProfileManagerRuntime {
       translate: this.translate,
     })
     this.profileAuthFileService = new ProfileAuthFileService({
+      replaceProfileAuthIfFresher: (id, live, baseline) =>
+        this.profileStorageService.replaceProfileAuthIfFresher(
+          id,
+          live,
+          baseline,
+        ),
       fs: this.fs,
       getActiveCodexAuthPath: () => this.getActiveCodexAuthPath(),
       loadLiveCodexAuthData: () =>
@@ -129,6 +140,14 @@ export class ProfileManagerRuntime {
         this.profileStateService.setLastProfileId(profileId),
     })
     this.profileAuthSyncService = new ProfileAuthSyncService({
+      getProfilesPath: () => this.profileStorageService.getProfilesPath(),
+      bootstrapEmptyHome: () => this.profileStateService.bootstrapEmptyHome(),
+      replaceProfileAuthIfFresher: (id, live, baseline) =>
+        this.profileStorageService.replaceProfileAuthIfFresher(
+          id,
+          live,
+          baseline,
+        ),
       getActiveProfileId: () => this.profileStateService.getActiveProfileId(),
       getProfile: (profileId) =>
         this.profileStorageService.getProfile(profileId),
@@ -154,6 +173,12 @@ export class ProfileManagerRuntime {
       isRemoteFilesMode: () => this.isRemoteFilesMode(),
     })
     this.profileAuthRecoveryService = new ProfileAuthRecoveryService({
+      replaceProfileAuthIfFresher: (id, live, baseline) =>
+        this.profileStorageService.replaceProfileAuthIfFresher(
+          id,
+          live,
+          baseline,
+        ),
       getActiveProfileId: () => this.profileStateService.getActiveProfileId(),
       getProfile: (profileId) =>
         this.profileStorageService.getProfile(profileId),
@@ -177,6 +202,43 @@ export class ProfileManagerRuntime {
       translate: this.translate,
     })
     this.profileStateService = new ProfileStateService({
+      captureLiveAuthSnapshot: () => {
+        const authPath = this.getActiveCodexAuthPath()
+        let content: string | null
+        try {
+          content = this.fs.readFileSync(authPath, 'utf8')
+        } catch (error) {
+          if ((error as { code?: string }).code !== 'ENOENT') {
+            throw error
+          }
+          content = null
+        }
+        return {
+          revision: content === null ? 'missing' : sha256Text(content),
+          restore: () => {
+            if (content === null) {
+              if (this.fs.existsSync(authPath)) {
+                this.fs.unlinkSync(authPath)
+              }
+            } else {
+              syncCodexAuthContent(authPath, content)
+            }
+          },
+        }
+      },
+      readLiveAuthRevision: () =>
+        this.fs.existsSync(this.getActiveCodexAuthPath())
+          ? sha256Text(
+              this.fs.readFileSync(this.getActiveCodexAuthPath(), 'utf8'),
+            )
+          : 'missing',
+      hasHomeBeenInitialized: () =>
+        this.profileStorageService.readSharedActiveProfile() !== null,
+      withCredentialsLock: (action) =>
+        withProfilesFileLock(
+          this.profileStorageService.getProfilesPath(),
+          action,
+        ),
       getActiveCodexHome: () => this.getActiveCodexHome(),
       getConfiguration: this.getConfiguration,
       globalState: this.globalState,
@@ -217,6 +279,14 @@ export class ProfileManagerRuntime {
       deleteActiveCodexAuthFile: () =>
         this.profileAuthFileService.deleteActiveCodexAuthFile(),
     })
+  }
+
+  /** Serialize switches, reset, and reconciliation for one live runtime home. */
+  withHomeLock<T>(action: () => Promise<T>): Promise<T> {
+    return withProfilesFileLock(
+      `${this.getActiveCodexAuthPath()}.switch`,
+      action,
+    )
   }
 
   public readonly fs: SyncFileSystem

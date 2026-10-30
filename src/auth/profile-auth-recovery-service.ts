@@ -4,6 +4,8 @@ import {
   findProfileByPreservationIdentity,
   maybeReplaceProfileAuthWithLive,
 } from '../utils/profile-auth-preservation'
+import { shouldReplaceStoredProfileAuthWithLive } from '../utils/auth-refresh-policy'
+import { matchesPreservationIdentityForProfile } from '../utils/preservation-identity'
 import type { ProfileTokens } from '../utils/profile-records'
 
 /**
@@ -18,6 +20,12 @@ export interface LiveAuthPreservationResult {
  * Dependencies for ProfileAuthRecoveryService.
  */
 interface ProfileAuthRecoveryServiceDeps {
+  /** Conditional store commit for live token capture. */
+  replaceProfileAuthIfFresher?: (
+    id: string,
+    live: AuthData,
+    baseline: AuthData | null,
+  ) => Promise<string>
   /** Function to get the currently active profile ID. */
   getActiveProfileId: () => Promise<string | undefined>
   /** Function to retrieve a profile by ID. */
@@ -64,34 +72,31 @@ export class ProfileAuthRecoveryService {
 
   /**
    * Preserves the stored profile's auth by updating it with current live auth if appropriate.
-   * A best-effort operation that doesn't block profile switching on failure.
+   * A failed credential commit blocks switching to preserve the live session.
    * @param profileId - The ID of the profile to preserve auth for.
    * @returns A promise that resolves when the operation completes.
    */
   async preserveStoredProfileAuthFromLive(profileId: string): Promise<void> {
-    try {
-      const profile = await this.deps.getProfile(profileId)
-      if (!profile) {
-        return
-      }
-
-      const liveAuth = await this.deps.loadLiveCodexAuthData()
-      if (!liveAuth) {
-        return
-      }
-
-      await maybeReplaceProfileAuthWithLive(
-        {
-          loadAuthData: (value) => this.deps.loadAuthData(value),
-          replaceProfileAuth: (value, authData) =>
-            this.deps.replaceProfileAuth(value, authData),
-        },
-        profile,
-        liveAuth,
-      )
-    } catch {
-      // Best-effort preservation; switching should continue.
+    const profile = await this.deps.getProfile(profileId)
+    if (!profile) {
+      return
     }
+
+    const liveAuth = await this.deps.loadLiveCodexAuthData()
+    if (!liveAuth) {
+      return
+    }
+
+    await maybeReplaceProfileAuthWithLive(
+      {
+        loadAuthData: (value) => this.deps.loadAuthData(value),
+        replaceProfileAuthIfFresher: this.deps.replaceProfileAuthIfFresher,
+        replaceProfileAuth: (value, authData) =>
+          this.deps.replaceProfileAuth(value, authData),
+      },
+      profile,
+      liveAuth,
+    )
   }
 
   /**
@@ -109,6 +114,7 @@ export class ProfileAuthRecoveryService {
       {
         listProfiles: () => this.deps.listProfiles(),
         loadAuthData: (profileId) => this.deps.loadAuthData(profileId),
+        replaceProfileAuthIfFresher: this.deps.replaceProfileAuthIfFresher,
       },
       liveAuth,
       activeId,
@@ -121,6 +127,7 @@ export class ProfileAuthRecoveryService {
     await maybeReplaceProfileAuthWithLive(
       {
         loadAuthData: (profileId) => this.deps.loadAuthData(profileId),
+        replaceProfileAuthIfFresher: this.deps.replaceProfileAuthIfFresher,
         replaceProfileAuth: (profileId, authData) =>
           this.deps.replaceProfileAuth(profileId, authData),
       },
@@ -128,6 +135,20 @@ export class ProfileAuthRecoveryService {
       liveAuth,
     )
 
+    const saved = await this.deps.loadAuthData(matchingProfile.id)
+    if (
+      !saved ||
+      !matchesPreservationIdentityForProfile(
+        matchingProfile,
+        liveAuth,
+        saved,
+      ) ||
+      shouldReplaceStoredProfileAuthWithLive(saved, liveAuth)
+    ) {
+      throw new Error(
+        'Current credentials were not saved. Profile switching was canceled.',
+      )
+    }
     return { status: 'saved' }
   }
 
@@ -177,7 +198,9 @@ export class ProfileAuthRecoveryService {
         )
         return null
       }
-      await this.deps.replaceProfileAuth(profileId, authData)
+      if (!(await this.deps.replaceProfileAuth(profileId, authData))) {
+        throw new Error('Could not restore the selected profile.')
+      }
       return authData
     }
 

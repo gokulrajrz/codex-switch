@@ -1,6 +1,7 @@
 /* c8 ignore file */
 import fs from 'fs'
 import path from 'path'
+import { randomUUID } from 'crypto'
 import { AuthData } from '../types'
 
 interface CodexAuthSyncDeps {
@@ -60,17 +61,32 @@ export function syncCodexAuthFile(
   authData: AuthData,
   deps: CodexAuthSyncDeps = {},
 ) {
+  syncCodexAuthContent(authPath, buildCodexAuthJson(authData), deps)
+}
+
+/** Publishes exact auth contents, including unsupported modes, for rollback. */
+export function syncCodexAuthContent(
+  authPath: string,
+  content: string,
+  deps: CodexAuthSyncDeps = {},
+): void {
   const dir = path.dirname(authPath)
-  fs.mkdirSync(dir, { recursive: true })
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
   let now = Date.now
   if (deps.now) {
     now = deps.now
   }
 
-  const tmpPath = path.join(dir, `auth.json.tmp.${process.pid}.${now()}`)
-  const content = buildCodexAuthJson(authData)
+  const tmpPath = path.join(
+    dir,
+    `auth.json.tmp.${process.pid}.${now()}.${randomUUID()}`,
+  )
 
-  fs.writeFileSync(tmpPath, content, { encoding: 'utf8' })
+  fs.writeFileSync(tmpPath, content, {
+    encoding: 'utf8',
+    mode: 0o600,
+    flag: 'wx',
+  })
 
   // Best-effort atomic replace:
   // - POSIX: rename overwrites.
@@ -79,9 +95,13 @@ export function syncCodexAuthFile(
     try {
       fs.renameSync(tmpPath, authPath)
       return
-    } catch {
-      // Fall back to non-atomic replace.
+    } catch (error) {
+      if (process.platform !== 'win32') {
+        throw error
+      }
+      // Windows fallback only; never weaken POSIX replacement guarantees.
       fs.copyFileSync(tmpPath, authPath)
+      fs.chmodSync(authPath, 0o600)
     }
   } finally {
     try {

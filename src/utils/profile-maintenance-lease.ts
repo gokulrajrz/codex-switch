@@ -1,4 +1,9 @@
 import { randomUUID } from 'crypto'
+import {
+  withProfilesFileLock,
+  isProcessAlive,
+  getLockHostId,
+} from './profiles-file-lock'
 import { dirname, basename, join } from 'path'
 
 export const MAINTENANCE_LEASE_SCHEMA_VERSION = 1
@@ -45,6 +50,7 @@ export interface LeaseOwnership {
 }
 
 interface LeaseFileContent {
+  processDomain?: string
   schemaVersion: number
   leaseId: string
   pid: number
@@ -61,6 +67,9 @@ interface LeaseFileContent {
 }
 
 interface MaintenanceLeaseDeps {
+  /** Injectable lifecycle mutex for virtual filesystems. */
+  withLock?: <T>(action: () => Promise<T>) => Promise<T>
+  isProcessAlive?: (pid: number) => boolean
   fs: LeaseFileSystem
   now?: () => number
   uuid?: () => string
@@ -81,10 +90,12 @@ function isErrnoException(error: unknown, code: string): boolean {
  *
  * There is no permanent leader: any window may acquire the lease for one
  * complete cycle, then release it. A crashed owner leaves a stale lease that
- * another window recovers after the heartbeat threshold. Every shared-state
+ * another window recovers after the heartbeat threshold and owner death. Every shared-state
  * write must be guarded by an ownership (fencing) check first.
  */
 export class MaintenanceLease {
+  private readonly withLock: <T>(action: () => Promise<T>) => Promise<T>
+  private readonly processAlive: (pid: number, domain?: string) => boolean
   private readonly fs: LeaseFileSystem
   private readonly now: () => number
   private readonly uuid: () => string
@@ -97,6 +108,12 @@ export class MaintenanceLease {
     deps: MaintenanceLeaseDeps,
   ) {
     this.fs = deps.fs
+    this.withLock =
+      deps.withLock ??
+      ((action) => withProfilesFileLock(`${this.leaseFile}.guard`, action))
+    this.processAlive =
+      deps.isProcessAlive ??
+      ((pid, domain) => domain !== getLockHostId() || isProcessAlive(pid))
     this.now = deps.now ?? Date.now
     this.uuid = deps.uuid ?? randomUUID
     this.staleMs = deps.staleMs ?? MAINTENANCE_LEASE_STALE_MS
@@ -108,20 +125,26 @@ export class MaintenanceLease {
    * fresh lease is already held by another window.
    */
   async tryAcquire(progress: LeaseProgress): Promise<LeaseOwnership | null> {
-    await this.ensureDir()
+    return this.withLock(async () => {
+      await this.ensureDir()
 
-    const direct = await this.tryExclusiveCreate(progress)
-    if (direct) {
-      return direct
-    }
+      const direct = await this.tryExclusiveCreate(progress)
+      if (direct) {
+        return direct
+      }
 
-    // A lease file already exists. Recover it only if it is stale.
-    const existing = await this.readLease()
-    if (existing && !this.isStale(existing)) {
-      return null
-    }
+      // A lease file already exists. Recover it only if it is stale.
+      const existing = await this.readLease()
+      if (
+        existing &&
+        (!this.isStale(existing) ||
+          this.processAlive(existing.pid, existing.processDomain))
+      ) {
+        return null
+      }
 
-    return await this.tryStaleTakeover(progress)
+      return await this.tryStaleTakeover(progress)
+    })
   }
 
   /**
@@ -132,20 +155,22 @@ export class MaintenanceLease {
     ownership: LeaseOwnership,
     progress: LeaseProgress,
   ): Promise<boolean> {
-    if (!(await this.stillOwns(ownership))) {
-      return false
-    }
+    return this.withLock(async () => {
+      if (!(await this.stillOwns(ownership))) {
+        return false
+      }
 
-    try {
-      await this.atomicWrite(this.buildContent(ownership, progress))
-      return true
-    } catch (error) {
-      this.debugLog(
-        'Maintenance lease heartbeat write failed:',
-        error instanceof Error ? error.message : error,
-      )
-      return true
-    }
+      try {
+        await this.atomicWrite(this.buildContent(ownership, progress))
+        return true
+      } catch (error) {
+        this.debugLog(
+          'Maintenance lease heartbeat write failed:',
+          error instanceof Error ? error.message : error,
+        )
+        return false
+      }
+    })
   }
 
   /**
@@ -159,17 +184,19 @@ export class MaintenanceLease {
 
   /** Release the lease, but never remove a replacement created by another process. */
   async release(ownership: LeaseOwnership): Promise<void> {
-    if (!(await this.stillOwns(ownership))) {
-      return
-    }
-    try {
-      await this.fs.unlink(this.leaseFile)
-    } catch (error) {
-      this.debugLog(
-        'Maintenance lease release failed:',
-        error instanceof Error ? error.message : error,
-      )
-    }
+    await this.withLock(async () => {
+      if (!(await this.stillOwns(ownership))) {
+        return
+      }
+      try {
+        await this.fs.unlink(this.leaseFile)
+      } catch (error) {
+        this.debugLog(
+          'Maintenance lease release failed:',
+          error instanceof Error ? error.message : error,
+        )
+      }
+    })
   }
 
   private async ensureDir(): Promise<void> {
@@ -268,6 +295,7 @@ export class MaintenanceLease {
     progress: LeaseProgress,
   ): LeaseFileContent {
     return {
+      processDomain: getLockHostId(),
       schemaVersion: MAINTENANCE_LEASE_SCHEMA_VERSION,
       leaseId: ownership.leaseId,
       pid: this.diagnostics.pid,

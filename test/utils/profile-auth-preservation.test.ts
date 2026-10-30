@@ -264,3 +264,50 @@ test('findProfileByPreservationIdentity respects preferred profile ordering', as
     undefined,
   )
 })
+
+test('live preservation uses conditional commits and refuses failed/conflicting writes', async () => {
+  const baseline = makeAuth()
+  const live = makeAuth({
+    tokenId: 'new-id',
+    authJson: {
+      tokens: {
+        id_token: 'new-id',
+        access_token: 'access',
+        refresh_token: 'refresh',
+      },
+      last_refresh: '2026-06-12T11:00:00Z',
+    },
+  })
+  for (const outcome of [
+    'updated',
+    'unchanged',
+    'missing',
+    'conflict',
+    'failed',
+  ]) {
+    const operation = maybeReplaceProfileAuthWithLive(
+      {
+        loadAuthData: async () => baseline,
+        replaceProfileAuth: async () => {
+          throw new Error('Unconditional replacement must not be used')
+        },
+        replaceProfileAuthIfFresher: async (
+          _id,
+          actualLive,
+          actualBaseline,
+        ) => {
+          assert.equal(actualLive, live)
+          assert.equal(actualBaseline, baseline)
+          return outcome
+        },
+      },
+      baseProfile,
+      live,
+    )
+    if (['missing', 'conflict', 'failed'].includes(outcome)) {
+      await assert.rejects(operation, /Could not preserve/)
+    } else {
+      assert.equal(await operation, outcome === 'updated')
+    }
+  }
+})

@@ -115,13 +115,6 @@ export function writeJsonFile(
 ): void {
   const dir = path.dirname(filePath)
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
-  if (process.platform !== 'win32') {
-    try {
-      fs.chmodSync(dir, 0o700)
-    } catch {
-      // Ignore best-effort permission correction failures.
-    }
-  }
 
   const tmpPath = path.join(
     dir,

@@ -264,3 +264,13 @@ test('compareIdentitySnapshots distinguishes exact, different, and ambiguous mat
     'ambiguous',
   )
 })
+
+test('identity comparison rejects a conflicting email without strong identifiers', () => {
+  assert.equal(
+    compareIdentitySnapshots(
+      buildIdentitySnapshot({ email: 'a@example.test' }),
+      buildIdentitySnapshot({ email: 'b@example.test' }),
+    ),
+    'different',
+  )
+})

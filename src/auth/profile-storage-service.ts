@@ -115,7 +115,7 @@ export class ProfileStorageService {
     return this.deps.globalStorageUri.fsPath
   }
 
-  private getProfilesPath(): string {
+  getProfilesPath(): string {
     return resolveProfilesPath(
       this.deps.isRemoteFilesMode(),
       this.getStorageDir(),
@@ -211,13 +211,18 @@ export class ProfileStorageService {
     if (!this.deps.isRemoteFilesMode()) {
       return
     }
-    writeJsonFile(
-      getSharedActiveProfilePathForHome(this.deps.getActiveCodexHome().id),
-      {
-        profileId,
-        updatedAt: new Date().toISOString(),
-      } satisfies SharedActiveProfile,
+    const markerPath = getSharedActiveProfilePathForHome(
+      this.deps.getActiveCodexHome().id,
     )
+    if (
+      readJsonFile<SharedActiveProfile>(markerPath)?.profileId === profileId
+    ) {
+      return
+    }
+    writeJsonFile(markerPath, {
+      profileId,
+      updatedAt: new Date().toISOString(),
+    } satisfies SharedActiveProfile)
   }
 
   /**
@@ -228,9 +233,16 @@ export class ProfileStorageService {
     if (!this.deps.isRemoteFilesMode()) {
       return
     }
-    deleteFileIfExists(
-      getSharedActiveProfilePathForHome(this.deps.getActiveCodexHome().id),
+    const markerPath = getSharedActiveProfilePathForHome(
+      this.deps.getActiveCodexHome().id,
     )
+    if (readJsonFile<SharedActiveProfile>(markerPath)?.profileId === '') {
+      return
+    }
+    writeJsonFile(markerPath, {
+      profileId: '',
+      updatedAt: new Date().toISOString(),
+    })
   }
 
   /**
@@ -523,52 +535,59 @@ export class ProfileStorageService {
     profileId: string,
     authData: AuthData,
   ): Promise<boolean> {
+    return withProfilesFileLock(this.getProfilesPath(), () =>
+      this.replaceProfileAuthUnlocked(profileId, authData),
+    )
+  }
+
+  private async replaceProfileAuthUnlocked(
+    profileId: string,
+    authData: AuthData,
+  ): Promise<boolean> {
     const previousTokens = await this.readStoredTokens(profileId)
     const tokens = buildProfileTokensFromAuth(authData)
 
-    return withProfilesFileLock(this.getProfilesPath(), async () => {
-      const file = await requireWritableProfilesFile(
-        this.profilesFileStorageDeps(),
-      )
-      if (!file) {
-        return false
-      }
-      const idx = file.profiles.findIndex((p) => p.id === profileId)
-      if (idx === -1) {
-        return false
-      }
+    const file = await requireWritableProfilesFile(
+      this.profilesFileStorageDeps(),
+    )
+    if (!file) {
+      return false
+    }
+    const idx = file.profiles.findIndex((p) => p.id === profileId)
+    if (idx === -1) {
+      return false
+    }
 
-      await this.writeStoredTokens(profileId, tokens)
+    await this.writeStoredTokens(profileId, tokens)
 
-      file.profiles[idx] = {
-        ...file.profiles[idx],
-        email: authData.email,
-        planType: authData.planType,
-        accountId: authData.accountId,
-        defaultOrganizationId: authData.defaultOrganizationId,
-        defaultOrganizationTitle: authData.defaultOrganizationTitle,
-        chatgptUserId: authData.chatgptUserId,
-        userId: authData.userId,
-        subject: authData.subject,
-        updatedAt: new Date().toISOString(),
-      }
+    file.profiles[idx] = {
+      ...file.profiles[idx],
+      email: authData.email,
+      planType: authData.planType,
+      accountId: authData.accountId,
+      defaultOrganizationId: authData.defaultOrganizationId,
+      defaultOrganizationTitle: authData.defaultOrganizationTitle,
+      chatgptUserId: authData.chatgptUserId,
+      userId: authData.userId,
+      subject: authData.subject,
+      updatedAt: new Date().toISOString(),
+    }
 
+    try {
+      writeProfilesFile(this.profilesFileStorageDeps(), file)
+      return true
+    } catch (error) {
       try {
-        writeProfilesFile(this.profilesFileStorageDeps(), file)
-        return true
-      } catch (error) {
-        try {
-          if (previousTokens) {
-            await this.writeStoredTokens(profileId, previousTokens)
-          } else {
-            await this.deleteStoredTokens(profileId)
-          }
-        } catch {
-          // Best-effort rollback.
+        if (previousTokens) {
+          await this.writeStoredTokens(profileId, previousTokens)
+        } else {
+          await this.deleteStoredTokens(profileId)
         }
-        throw error
+      } catch {
+        // Best-effort rollback.
       }
-    })
+      throw error
+    }
   }
 
   /**
@@ -584,52 +603,69 @@ export class ProfileStorageService {
   async replaceProfileAuthIfFresher(
     profileId: string,
     refreshedAuth: AuthData,
-    baselineAuth: AuthData,
+    baselineAuth: AuthData | null,
+    canCommit?: () => Promise<boolean>,
   ): Promise<ProfileAuthReplacementOutcome> {
-    const profile = await this.getProfile(profileId)
-    if (!profile) {
-      return 'missing'
-    }
-
-    if (!getCanonicalTokenBundle(refreshedAuth)) {
-      return 'conflict'
-    }
-
-    const currentAuth = await this.loadAuthData(profileId)
-
-    // Identity must unambiguously match the intended profile (org included).
-    if (
-      !matchesPreservationIdentityForProfile(
-        profile,
-        refreshedAuth,
-        currentAuth,
-      )
-    ) {
-      return 'conflict'
-    }
-
-    // Not older than current, and tokens / last_refresh actually changed.
-    if (!shouldReplaceStoredProfileAuthWithLive(currentAuth, refreshedAuth)) {
-      return 'unchanged'
-    }
-
-    // Concurrent mutation: stored auth changed versus the baseline used to
-    // start Codex. Only override it when refreshed auth is strictly newer.
-    if (currentAuth && authTokensDiffer(currentAuth, baselineAuth)) {
-      const currentRefresh = getAuthLastRefresh(currentAuth)
-      const refreshedRefresh = getAuthLastRefresh(refreshedAuth)
-      if (
-        currentRefresh === undefined ||
-        refreshedRefresh === undefined ||
-        refreshedRefresh <= currentRefresh
-      ) {
-        return 'conflict'
-      }
-    }
-
     try {
-      const written = await this.replaceProfileAuth(profileId, refreshedAuth)
-      return written ? 'updated' : 'missing'
+      return await withProfilesFileLock(this.getProfilesPath(), async () => {
+        if (canCommit && !(await canCommit())) {
+          return 'conflict'
+        }
+        const profile = await this.getProfile(profileId)
+        if (!profile) {
+          return 'missing'
+        }
+
+        if (!getCanonicalTokenBundle(refreshedAuth)) {
+          return 'conflict'
+        }
+
+        const currentAuth = await this.loadAuthData(profileId)
+
+        // Identity must unambiguously match the intended profile (org included).
+        if (
+          !matchesPreservationIdentityForProfile(
+            profile,
+            refreshedAuth,
+            currentAuth,
+          )
+        ) {
+          return 'conflict'
+        }
+
+        // Not older than current, and tokens / last_refresh actually changed.
+        if (
+          !shouldReplaceStoredProfileAuthWithLive(currentAuth, refreshedAuth)
+        ) {
+          return 'unchanged'
+        }
+
+        // Concurrent mutation: stored auth changed versus the baseline used to
+        // start Codex. Only override it when refreshed auth is strictly newer.
+        if (
+          currentAuth &&
+          (!baselineAuth || authTokensDiffer(currentAuth, baselineAuth))
+        ) {
+          const currentRefresh = getAuthLastRefresh(currentAuth)
+          const refreshedRefresh = getAuthLastRefresh(refreshedAuth)
+          if (
+            currentRefresh === undefined ||
+            refreshedRefresh === undefined ||
+            refreshedRefresh <= currentRefresh
+          ) {
+            return 'conflict'
+          }
+        }
+
+        if (canCommit && !(await canCommit())) {
+          return 'conflict'
+        }
+        const written = await this.replaceProfileAuthUnlocked(
+          profileId,
+          refreshedAuth,
+        )
+        return written ? 'updated' : 'missing'
+      })
     } catch {
       return 'failed'
     }

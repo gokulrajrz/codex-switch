@@ -356,7 +356,10 @@ test('ProfileStorageService rolls back created secrets when profile metadata wri
     })
 
     assert.equal(secrets.values.size, 0)
-    assert.deepEqual(fs.readdirSync(dir), [])
+    assert.deepEqual(
+      fs.readdirSync(dir).filter((name) => !name.endsWith('.lock')),
+      [],
+    )
   } finally {
     fs.renameSync = originalRenameSync
     fs.chmodSync = originalChmodSync
@@ -434,7 +437,10 @@ test('ProfileStorageService propagates SecretStorage store failure on createProf
   )
 
   assert.equal(secrets.values.size, 0)
-  assert.equal(fs.readdirSync(dir).length, 0)
+  assert.equal(
+    fs.readdirSync(dir).filter((name) => !name.endsWith('.lock')).length,
+    0,
+  )
 })
 
 test('ProfileStorageService propagates SecretStorage store failure on replaceProfileAuth', async () => {
@@ -481,4 +487,39 @@ test('ProfileStorageService propagates SecretStorage store failure on replacePro
       profiles: [profile],
     },
   )
+})
+
+test('unchanged shared markers do not publish watcher-triggering file writes', () => {
+  const root = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'codex-switch-marker-loop-'),
+  )
+  const homedir = os.homedir
+  const rename = fs.renameSync
+  let publications = 0
+  try {
+    os.homedir = () => root
+    const service = new ProfileStorageService({
+      isRemoteFilesMode: () => true,
+      getActiveCodexHome: () => ({ id: 'default', isDefault: true }),
+    } as never)
+    fs.renameSync = ((from, to) => {
+      publications++
+      return rename(from, to)
+    }) as typeof fs.renameSync
+    service.writeSharedActiveProfile('synthetic-profile')
+    service.writeSharedActiveProfile('synthetic-profile')
+    assert.equal(publications, 1)
+    assert.equal(
+      service.readSharedActiveProfile()?.profileId,
+      'synthetic-profile',
+    )
+    service.deleteSharedActiveProfile()
+    service.deleteSharedActiveProfile()
+    assert.equal(publications, 2)
+    assert.equal(service.readSharedActiveProfile()?.profileId, '')
+  } finally {
+    os.homedir = homedir
+    fs.renameSync = rename
+    fs.rmSync(root, { recursive: true, force: true })
+  }
 })

@@ -5,7 +5,7 @@ import {
 } from '../auth/profile-transfer-service'
 import { writeJsonFile } from '../auth/shared-profile-store'
 import {
-  addCurrentAuthJsonAsProfile,
+  addAuthDataAsProfile,
   ensureLiveAuthIsSavedBeforeReplacing,
   type ProfileCommandPromptDeps,
 } from './profile-command-prompts'
@@ -78,7 +78,7 @@ export async function addFromFile(deps: ProfileFileCommandDeps): Promise<void> {
     return
   }
 
-  await addCurrentAuthJsonAsProfile(deps.promptDeps, true)
+  await addAuthDataAsProfile(deps.promptDeps, authData, true)
 }
 
 /**

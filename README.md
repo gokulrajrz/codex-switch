@@ -85,10 +85,13 @@ and previous profile selection local to the resolved `CODEX_HOME`.
 It does not change which `CODEX_HOME` or auth path the extension resolves.
 It only changes which profile state bucket is used.
 
-When a new non-default `CODEX_HOME` has no `auth.json` yet,
+When a new, uninitialized non-default `CODEX_HOME` has no `auth.json` yet,
 Codex Switch can bootstrap it from the default home active profile.
 If `auth.json` already exists, Codex Switch leaves it untouched
 and tries to match it to a saved profile instead.
+A deliberate new-login reset suppresses inheritance until a new login or
+explicit profile switch. Missing, unreadable, malformed, or unsupported live auth
+is never automatically replaced with previously saved credentials.
 This bootstrap behavior is controlled by
 `codexSwitch.codexHome.inheritDefaultProfileWhenEmpty`.
 
@@ -115,14 +118,15 @@ Supported runtime matrix:
 
 ## Profile Matching
 
-Duplicate detection is identity-first.
-When available, it matches by user identity fields from auth payloads:
-`chatgptUserId`, `userId`, and JWT `sub`.
+Account matching respects user identity, account ID, and organization/workspace
+constraints. An explicit account-ID conflict prevents matching even when the
+user identity is the same. Live-auth preservation and active-account inference
+use these constraints to keep workspaces distinct.
 
-If identity fields are missing, matching falls back to combinations of
-`email`, `accountId`, and default organization/workspace id when present.
-If organization id exists only on one side,
-profiles are treated as distinct to avoid accidental collapse.
+Import duplicate detection compares the saved identity and metadata fields,
+including account ID. Profiles with different saved metadata remain separate.
+If organization identity exists only on one side, live-account matching remains
+ambiguous rather than treating the profiles as interchangeable.
 
 ## Storage Modes
 
@@ -141,6 +145,8 @@ In `remoteFiles` mode, data lives under `~/.codex-switch/`:
   Codex home.
 
 Directories are created with `0700`, files with `0600`.
+Clearing a shared active selection leaves an empty marker so other clients
+can distinguish a deliberate login reset from a new, uninitialized home.
 
 In `secretStorage` mode, profile metadata is still stored in a local
 `profiles.json` file under VS Code global storage,
@@ -208,8 +214,9 @@ Multiple windows of the same IDE product coordinate
 so that only one window runs a given background check at a time,
 with no permanent leader:
 any window can take over after another closes or crashes.
-Different IDE products (VS Code, Cursor, VSCodium) stay isolated
-because they normally use independent credential stores.
+Local SecretStorage backends stay isolated by IDE product.
+In `remoteFiles` mode, all IDE products sharing the same store coordinate
+through the same maintenance scope.
 Coordination uses small files under:
 
 ```text
@@ -236,11 +243,32 @@ For local single-client use, `secretStorage` is the safer default.
 Use `remoteFiles` only on trusted SSH hosts
 where shared profile state is expected.
 
-Sync writes `auth.json` via a temp-file-and-replace flow
-to reduce partial write risk.
+Sync writes `auth.json` using a private temporary file and atomic replacement
+on POSIX. Files are created with `0600`, new home directories with `0700`.
+Existing export destination directory permissions are preserved.
+Switches and credential updates coordinate through process-owned lock tickets;
+a paused live process retains ownership. Contended writes time out after one
+minute rather than stealing a live owner's lock. Close all older extension
+windows when upgrading the locking protocol.
+Only processes on the same host and PID namespace can reclaim abandoned tickets;
+a shared store mounted across different hosts requires external coordination.
 The extension does not create rotated backup files like `auth.json.bak.*`.
 
 ## Known Limitations
+
+### Runtime and Credential Backend
+
+Switching synchronizes file-backed Codex credentials. It does not update an
+OS keyring or an ephemeral Codex login. Configure a supported file-backed runtime
+before using profile switching; the extension's SecretStorage setting only
+controls saved profile storage, not Codex's own credential backend.
+
+Running IDEs and terminal sessions may require a restart to adopt a changed
+login. The restart setting affects the invoking IDE window. Linux maintenance
+requires a standalone Codex CLI or an explicitly configured CLI path.
+
+Importing a profile export intentionally replaces duplicate credentials with
+the supplied values, including older backups. This remains a restore operation.
 
 ### Plan Label Can Lag the Real Subscription
 

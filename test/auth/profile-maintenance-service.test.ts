@@ -1,3 +1,4 @@
+import { withTestMutex } from '../helpers/mutex'
 /** Tests for profile-maintenance-service. */
 import assert from 'node:assert/strict'
 import test from 'node:test'
@@ -135,6 +136,8 @@ function makeService(
     paths,
     diagnostics,
     fs: harness.fs,
+    withLeaseLock: (action) => withTestMutex(harness.fs, action),
+    isProcessAlive: () => false,
     profileManager: profileManager as never,
     runProfileMaintenance: (_pm, profile) => run(profile),
     getIntervalSeconds: options.interval ?? (() => 900),
@@ -206,6 +209,8 @@ test('a fresh lease held by another window blocks a cycle', async () => {
   const harness = makeHarness([makeProfile('a')])
   const other = new MaintenanceLease(paths.leaseFile, diagnostics, {
     fs: harness.fs,
+    withLock: (action) => withTestMutex(harness.fs, action),
+    isProcessAlive: () => false,
     now: () => harness.clock.value,
     uuid: () => `other-${uuidCounter++}`,
   })

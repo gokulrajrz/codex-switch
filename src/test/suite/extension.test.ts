@@ -62,8 +62,22 @@ class MemorySecretStorage {
 }
 
 function makeAuthData(id: string) {
+  const idToken = `e30.${Buffer.from(
+    JSON.stringify({
+      sub: `${id}-subject`,
+      email: `${id}@example.com`,
+      'https://api.openai.com/auth': {
+        chatgpt_user_id: `${id}-chatgpt`,
+        user_id: `${id}-user`,
+        chatgpt_plan_type: 'plus',
+        organizations: [
+          { id: `${id}-org`, title: `${id} Org`, is_default: true },
+        ],
+      },
+    }),
+  ).toString('base64url')}.synthetic`
   return {
-    idToken: `${id}-id`,
+    idToken,
     accessToken: `${id}-access`,
     refreshToken: `${id}-refresh`,
     accountId: `${id}-account`,
@@ -76,7 +90,7 @@ function makeAuthData(id: string) {
     planType: 'plus',
     authJson: {
       tokens: {
-        id_token: `${id}-id`,
+        id_token: idToken,
         access_token: `${id}-access`,
         refresh_token: `${id}-refresh`,
         account_id: `${id}-account`,

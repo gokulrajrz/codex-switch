@@ -81,6 +81,20 @@ export async function addCurrentAuthJsonAsProfile(
       return false
     }
 
+    return await addAuthDataAsProfile(deps, authData, restartAfterImport)
+  } catch (error) {
+    deps.showErrorMessage(String(error))
+    return false
+  }
+}
+
+/** Imports the supplied credentials without re-reading another auth file. */
+export async function addAuthDataAsProfile(
+  deps: ProfileCommandPromptDeps,
+  authData: AuthData,
+  restartAfterImport: boolean,
+): Promise<boolean> {
+  try {
     const existing = await deps.findDuplicateProfile(authData)
     if (existing) {
       const replaceLabel = deps.translate('Replace')

@@ -97,3 +97,17 @@ test('buildMaintenancePaths defaults to the user home directory', () => {
     path.join(os.homedir(), '.codex-switch', 'maintenance', 'v1', scope),
   )
 })
+
+test('shared remote credentials coordinate across IDE products and installation paths', () => {
+  const shared = { ...baseInput, profileStorageBackend: 'remoteFiles' }
+  assert.equal(
+    computeProductScopeHash(shared),
+    computeProductScopeHash({
+      ...shared,
+      appName: 'Cursor',
+      uriScheme: 'cursor',
+      globalStorageFsPath: '/different/client/store',
+      remoteName: 'ssh-remote',
+    }),
+  )
+})

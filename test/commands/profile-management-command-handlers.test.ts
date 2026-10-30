@@ -528,3 +528,14 @@ test('syncFromDefaultHomeCommand falls back to profile id when name is missing',
     'info:Synced active profile from default CODEX_HOME: profile-1.',
   ])
 })
+
+test('default-home sync respects cancellation for an unsaved live account', async () => {
+  const deps = makeDeps({ liveStatus: 'unsaved' })
+  let synced = false
+  deps.profileManager.syncActiveProfileFromDefaultHome = async () => {
+    synced = true
+    return 'profile-1'
+  }
+  await syncFromDefaultHomeCommand(deps as any)
+  assert.equal(synced, false)
+})

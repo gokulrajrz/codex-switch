@@ -40,7 +40,7 @@ export function startExtensionRuntime(
 
   context.subscriptions.push(
     ...profileManager.createWatchers(() => {
-      void uiController.refreshUi()
+      void uiController.reconcileAndRefresh()
     }, runtime.home.authPath),
   )
 

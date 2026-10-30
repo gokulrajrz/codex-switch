@@ -116,6 +116,10 @@ export function compareIdentitySnapshots(
     return 'different'
   }
 
+  if (compareIdentityValue(left.accountId, right.accountId) === 'different') {
+    return 'different'
+  }
+
   const strongState = compareIdentityGroup(left, right, [
     'chatgptUserId',
     'userId',

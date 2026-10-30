@@ -176,7 +176,13 @@ export class ProfileTransferService {
 
       const duplicate = await this.deps.findDuplicateProfile(parsed.authData)
       if (duplicate) {
-        await this.deps.replaceProfileAuth(duplicate.id, parsed.authData)
+        if (
+          !(await this.deps.replaceProfileAuth(duplicate.id, parsed.authData))
+        ) {
+          throw new Error(
+            `Could not update imported profile: ${duplicate.name}`,
+          )
+        }
         if (parsed.sourceProfileId) {
           sourceToTargetId.set(parsed.sourceProfileId, duplicate.id)
         }
@@ -198,7 +204,11 @@ export class ProfileTransferService {
     if (importedActiveProfileId) {
       const targetId = sourceToTargetId.get(importedActiveProfileId)
       if (targetId) {
-        await this.deps.setActiveProfileId(targetId)
+        if (!(await this.deps.setActiveProfileId(targetId))) {
+          throw new Error(
+            'Profiles imported, but the active profile could not be restored.',
+          )
+        }
       }
     }
 

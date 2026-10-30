@@ -12,6 +12,12 @@ import type { SyncFileSystem } from './runtime-adapters'
  * Dependencies for ProfileAuthFileService.
  */
 interface ProfileAuthFileServiceDeps {
+  /** Conditional store commit for live token capture. */
+  replaceProfileAuthIfFresher?: (
+    id: string,
+    live: AuthData,
+    baseline: AuthData | null,
+  ) => Promise<string>
   /** File system operations adapter. */
   fs: SyncFileSystem
   /** Function to get the path to the active Codex auth file. */
@@ -135,6 +141,8 @@ export class ProfileAuthFileService {
             {
               listProfiles: () => this.deps.listProfiles(),
               loadAuthData: (profileId) => this.deps.loadAuthData(profileId),
+              replaceProfileAuthIfFresher:
+                this.deps.replaceProfileAuthIfFresher,
             },
             liveAuth,
             preferredProfileId,
@@ -143,6 +151,8 @@ export class ProfileAuthFileService {
           maybeReplaceProfileAuthWithLive(
             {
               loadAuthData: (profileId) => this.deps.loadAuthData(profileId),
+              replaceProfileAuthIfFresher:
+                this.deps.replaceProfileAuthIfFresher,
               replaceProfileAuth: (profileId, authData) =>
                 this.deps.replaceProfileAuth(profileId, authData),
             },

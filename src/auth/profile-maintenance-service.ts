@@ -44,6 +44,7 @@ interface RunMaintenance {
   (
     profileManager: ProfileManager,
     profile: ProfileSummary,
+    canCommit?: () => Promise<boolean>,
   ): Promise<ProfileMaintenanceRunResult>
 }
 
@@ -51,6 +52,9 @@ interface RunMaintenance {
  * Dependencies for ProfileMaintenanceService.
  */
 export interface ProfileMaintenanceServiceDeps {
+  /** Injectable lifecycle mutex for virtual filesystems. */
+  withLeaseLock?: <T>(action: () => Promise<T>) => Promise<T>
+  isProcessAlive?: (pid: number) => boolean
   /** Maintenance file paths and utilities. */
   paths: MaintenancePaths
   /** Lease diagnostics for debugging coordination. */
@@ -137,6 +141,8 @@ export class ProfileMaintenanceService {
     this.onStateChanged = deps.onStateChanged ?? (() => undefined)
     this.lease = new MaintenanceLease(deps.paths.leaseFile, deps.diagnostics, {
       fs: deps.fs,
+      withLock: deps.withLeaseLock,
+      isProcessAlive: deps.isProcessAlive,
       now: this.now,
       uuid: this.uuid,
       debugLog: this.debugLog,
@@ -327,6 +333,7 @@ export class ProfileMaintenanceService {
       result = await this.deps.runProfileMaintenance(
         this.deps.profileManager,
         profile,
+        () => this.lease.stillOwns(ownership),
       )
     } finally {
       this.activeProfileId = undefined

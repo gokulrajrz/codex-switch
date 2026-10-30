@@ -68,6 +68,7 @@ interface ProfileMaintenanceResult {
   rateLimits: ProfileRateLimits | null
   /** Updated authentication data from Codex, if tokens were refreshed. */
   refreshedAuth: AuthData | null
+  requestError?: unknown
 }
 
 /**
@@ -591,6 +592,7 @@ export class ProfileRateLimitService {
   async runProfileMaintenance(
     profileManager: ProfileManager,
     profile: ProfileSummary,
+    canCommit?: () => Promise<boolean>,
   ): Promise<ProfileMaintenanceRunResult> {
     if (this.disposed) {
       return {
@@ -645,7 +647,11 @@ export class ProfileRateLimitService {
           profile,
           authData,
           result.refreshedAuth,
+          canCommit,
         )
+      if (result.requestError) {
+        throw result.requestError
+      }
       this.cacheSuccess(summary, result.rateLimits)
 
       if (persistFailed) {
@@ -796,6 +802,9 @@ export class ProfileRateLimitService {
         authData,
         result.refreshedAuth,
       )
+      if (result.requestError) {
+        throw result.requestError
+      }
       this.cacheSuccess(summary, result.rateLimits)
       return result.rateLimits
     } catch (error) {
@@ -824,6 +833,7 @@ export class ProfileRateLimitService {
     profile: ProfileSummary,
     baselineAuth: AuthData,
     refreshedAuth: AuthData | null,
+    canCommit?: () => Promise<boolean>,
   ): Promise<{ summary: ProfileSummary; persistFailed: boolean }> {
     if (!refreshedAuth || !authChangedInMemory(baselineAuth, refreshedAuth)) {
       return { summary: profile, persistFailed: false }
@@ -834,6 +844,7 @@ export class ProfileRateLimitService {
         profile.id,
         refreshedAuth,
         baselineAuth,
+        canCommit,
       )
       if (outcome === 'failed') {
         return { summary: profile, persistFailed: true }
@@ -1052,6 +1063,7 @@ async function queryRateLimitsViaTemporaryCodexHome(
       spawnAppServer,
     )
     let rateLimits: ProfileRateLimits | null = null
+    let requestError: unknown
     try {
       await client.initialize()
       const response = await client.readRateLimits()
@@ -1065,6 +1077,8 @@ async function queryRateLimitsViaTemporaryCodexHome(
           response,
         )
       }
+    } catch (error) {
+      requestError = error
     } finally {
       await client.dispose()
     }
@@ -1077,7 +1091,7 @@ async function queryRateLimitsViaTemporaryCodexHome(
       tempHomeFs,
       debugLog,
     )
-    return { rateLimits, refreshedAuth }
+    return { rateLimits, refreshedAuth, requestError }
   } finally {
     signal?.removeEventListener('abort', onAbort)
     await removeTemporaryCodexHome(

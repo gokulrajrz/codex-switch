@@ -231,7 +231,10 @@ export function createExtensionUiController(
       // Refresh local UI from shared state and request a cycle without
       // bypassing freshness; the lease prevents duplicate background work.
       void profileMaintenanceService.requestCycle()
-      void refreshUi()
+      void profileManager
+        .reconcileActiveProfileWithCodexAuthFile()
+        .then(() => refreshUi())
+        .catch((error) => errorLog('Error reconciling auth on focus:', error))
     }),
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (

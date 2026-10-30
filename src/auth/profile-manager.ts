@@ -188,7 +188,9 @@ export class ProfileManager {
     data: ExportedSettingsV1
     skipped: number
   }> {
-    return this.profileTransferService.exportProfilesForTransfer()
+    return this.runtime.withHomeLock(() =>
+      this.profileTransferService.exportProfilesForTransfer(),
+    )
   }
 
   /**
@@ -199,7 +201,9 @@ export class ProfileManager {
   async importProfilesFromTransfer(
     value: unknown,
   ): Promise<ImportProfilesResult> {
-    return this.profileTransferService.importProfilesFromTransfer(value)
+    return this.runtime.withHomeLock(() =>
+      this.profileTransferService.importProfilesFromTransfer(value),
+    )
   }
 
   /**
@@ -237,11 +241,13 @@ export class ProfileManager {
     profileId: string,
     refreshedAuth: AuthData,
     baselineAuth: AuthData,
+    canCommit?: () => Promise<boolean>,
   ): Promise<ProfileAuthReplacementOutcome> {
     return this.profileStorageService.replaceProfileAuthIfFresher(
       profileId,
       refreshedAuth,
       baselineAuth,
+      canCommit,
     )
   }
 
@@ -291,7 +297,9 @@ export class ProfileManager {
    * @returns A promise that resolves to the active profile ID, or undefined if none is active.
    */
   async getActiveProfileId(): Promise<string | undefined> {
-    return this.profileStateService.getActiveProfileId()
+    return this.runtime.withHomeLock(() =>
+      this.profileStateService.getActiveProfileId(),
+    )
   }
 
   /**
@@ -299,7 +307,9 @@ export class ProfileManager {
    * @returns A promise that resolves to the preparation result.
    */
   async prepareForNewLoginChat(): Promise<PrepareForNewLoginChatResult> {
-    return this.profileStateService.prepareForNewLoginChat()
+    return this.runtime.withHomeLock(() =>
+      this.profileStateService.prepareForNewLoginChat(),
+    )
   }
 
   /**
@@ -308,7 +318,9 @@ export class ProfileManager {
    * @returns A promise that resolves to true if the change succeeded, false otherwise.
    */
   async setActiveProfileId(profileId: string | undefined): Promise<boolean> {
-    return this.profileStateService.setActiveProfileId(profileId)
+    return this.runtime.withHomeLock(() =>
+      this.profileStateService.setActiveProfileId(profileId),
+    )
   }
 
   /**
@@ -316,7 +328,9 @@ export class ProfileManager {
    * @returns A promise that resolves to the synced profile ID, or undefined if not found.
    */
   async syncActiveProfileFromDefaultHome(): Promise<string | undefined> {
-    return this.profileStateService.syncActiveProfileFromDefaultHome()
+    return this.runtime.withHomeLock(() =>
+      this.profileStateService.syncActiveProfileFromDefaultHome(),
+    )
   }
 
   /**
@@ -341,7 +355,9 @@ export class ProfileManager {
    * @returns A promise that resolves to the newly activated profile ID, or undefined if toggle failed.
    */
   async toggleLastProfileId(): Promise<string | undefined> {
-    return this.profileStateService.toggleLastProfileId()
+    return this.runtime.withHomeLock(() =>
+      this.profileStateService.toggleLastProfileId(),
+    )
   }
 
   /**
@@ -350,7 +366,9 @@ export class ProfileManager {
    * @returns A promise that resolves when reconciliation completes.
    */
   async reconcileActiveProfileWithCodexAuthFile(): Promise<void> {
-    await this.profileAuthSyncService.reconcileActiveProfileWithCodexAuthFile()
+    await this.runtime.withHomeLock(() =>
+      this.profileAuthSyncService.reconcileActiveProfileWithCodexAuthFile(),
+    )
   }
 
   /**
@@ -359,7 +377,9 @@ export class ProfileManager {
    * @returns A promise that resolves to the preservation result.
    */
   async preserveLiveAuthForMatchingProfile(): Promise<LiveAuthPreservationResult> {
-    return this.profileAuthRecoveryService.preserveLiveAuthForMatchingProfile()
+    return this.runtime.withHomeLock(() =>
+      this.profileAuthRecoveryService.preserveLiveAuthForMatchingProfile(),
+    )
   }
 
   /**
@@ -367,11 +387,12 @@ export class ProfileManager {
    * @returns A promise that resolves when synchronization completes.
    */
   async syncActiveProfileToCodexAuthFile(): Promise<void> {
-    const active = await this.getActiveProfileId()
-    if (!active) {
-      return
-    }
-    await this.profileAuthFileService.syncActiveProfileToCodexAuthFile(active)
+    await this.runtime.withHomeLock(async () => {
+      const active = await this.profileStateService.getActiveProfileId()
+      if (active) {
+        await this.profileStateService.setActiveProfileId(active)
+      }
+    })
   }
 
   /**

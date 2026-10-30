@@ -358,3 +358,12 @@ test('ensureCodexCliForRateLimits stops when warning is dismissed', async () => 
 
   assert.equal(await ensureCodexCliForRateLimits(deps as any), false)
 })
+
+test('current-file import handles auth read exceptions without reporting success', async () => {
+  const deps = makeDeps({
+    loadAuthDataFromFile: async () => {
+      throw new Error('auth file unreadable')
+    },
+  })
+  assert.equal(await addCurrentAuthJsonAsProfile(deps as any, false), false)
+})

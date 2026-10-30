@@ -7,10 +7,7 @@ import {
   shouldMigrateLegacyProfileState,
 } from '../utils/profile-state-policy'
 import { resolveProfileStateBucket } from '../utils/profile-state-buckets'
-import {
-  resolveActiveProfileId,
-  setActiveProfileIdInState,
-} from '../utils/profile-active-state'
+import { setActiveProfileIdInState } from '../utils/profile-active-state'
 import {
   readLastProfileIdFromState,
   toggleLastProfileId,
@@ -29,6 +26,14 @@ const OLD_LAST_PROFILE_KEY = 'codexUsage.lastProfileId'
  * Dependencies for ProfileStateService.
  */
 interface ProfileStateServiceDeps {
+  /** Keeps original file bytes in memory so failed switches can restore any auth mode. */
+  captureLiveAuthSnapshot?: () => { revision: string; restore: () => void }
+  /** Detects external login changes during asynchronous switching work. */
+  readLiveAuthRevision?: () => string
+  /** Shared marker presence also records deliberate logout across clients. */
+  hasHomeBeenInitialized?: () => boolean
+  /** Serializes target reload and publication against credential updates. */
+  withCredentialsLock?: <T>(action: () => Promise<T>) => Promise<T>
   /** Function to get the active Codex home configuration. */
   getActiveCodexHome: () => ResolvedCodexHome
   /** Configuration getter for accessing VS Code settings. */
@@ -151,30 +156,44 @@ export class ProfileStateService {
     )
   }
 
-  private async inheritDefaultProfileIfCurrentHomeIsEmpty(): Promise<
-    string | undefined
-  > {
-    if (!this.isNonDefaultPerHomeState()) {
-      return undefined
-    }
-    if (!this.shouldInheritDefaultProfileWhenEmpty()) {
-      return undefined
-    }
-    if (!this.isActiveCodexAuthFileMissing()) {
-      return undefined
-    }
+  private initializedKey(): string {
+    return `codexSwitch.homeInitialized.${this.deps.getActiveCodexHome().id}`
+  }
 
-    const defaultProfileId = await this.getDefaultHomeActiveProfileId()
-    if (!defaultProfileId) {
-      return undefined
+  /** Bootstrap an uninitialized custom home only; logout never qualifies. */
+  async bootstrapEmptyHome(): Promise<void> {
+    if (
+      !this.isNonDefaultPerHomeState() ||
+      !this.shouldInheritDefaultProfileWhenEmpty() ||
+      this.deps.globalState.get<boolean>(this.initializedKey()) ||
+      this.deps.hasHomeBeenInitialized?.() ||
+      this.deps.hasActiveCodexAuthFile()
+    ) {
+      return
     }
-    const existing = await this.deps.getProfile(defaultProfileId)
-    if (!existing) {
-      return undefined
+    const id = await this.getDefaultHomeActiveProfileId()
+    if (!id) {
+      return
     }
-
-    await this.setActiveProfileIdInState(defaultProfileId)
-    return defaultProfileId
+    const publish = async () => {
+      if (
+        this.deps.hasActiveCodexAuthFile() ||
+        this.deps.globalState.get<boolean>(this.initializedKey()) ||
+        this.deps.hasHomeBeenInitialized?.()
+      ) {
+        return
+      }
+      const auth = await this.deps.loadAuthData(id)
+      if (!auth) {
+        return
+      }
+      this.deps.syncProfileAuthToCodexAuthFile(id, auth)
+      await this.setActiveProfileIdInState(id)
+      await this.deps.globalState.update(this.initializedKey(), true)
+    }
+    await (this.deps.withCredentialsLock
+      ? this.deps.withCredentialsLock(publish)
+      : publish())
   }
 
   /**
@@ -183,25 +202,30 @@ export class ProfileStateService {
    * @returns A promise that resolves to the active profile ID, or undefined if none is active.
    */
   async getActiveProfileId(): Promise<string | undefined> {
-    return resolveActiveProfileId({
-      isRemoteFilesMode: this.deps.isRemoteFilesMode(),
-      currentBucket: this.getStateBucket(),
-      legacyBucket: this.getLegacyStateBucket(),
-      keys: {
-        current: this.activeProfileKey(),
-        currentBase: ACTIVE_PROFILE_KEY,
-        legacy: OLD_ACTIVE_PROFILE_KEY,
-      },
-      shouldMigrateLegacyProfileState: this.shouldMigrateLegacyProfileState(),
-      readSharedActiveProfile: () => this.deps.readSharedActiveProfile(),
-      writeSharedActiveProfile: (profileId) =>
-        this.deps.writeSharedActiveProfile(profileId),
-      getProfile: (profileId) => this.deps.getProfile(profileId),
-      inferActiveProfileIdFromAuthFile: () =>
-        this.deps.inferActiveProfileIdFromAuthFile(),
-      inheritDefaultProfileIfCurrentHomeIsEmpty: () =>
-        this.inheritDefaultProfileIfCurrentHomeIsEmpty(),
-    })
+    const live = await this.deps.loadLiveCodexAuthData()
+    const previous =
+      (this.deps.isRemoteFilesMode()
+        ? this.deps.readSharedActiveProfile()
+        : this.getStateBucket().get<string>(this.activeProfileKey())) ||
+      undefined
+    const inferred = live
+      ? await this.deps.inferActiveProfileIdFromAuthFile()
+      : undefined
+    if (live || this.deps.hasActiveCodexAuthFile() || previous) {
+      await this.deps.globalState.update(this.initializedKey(), true)
+    } else {
+      await this.bootstrapEmptyHome()
+      if (this.deps.hasActiveCodexAuthFile()) {
+        return this.getActiveProfileId()
+      }
+    }
+    if (previous !== inferred) {
+      if (previous) {
+        await this.setLastProfileId(previous)
+      }
+      await this.setActiveProfileIdInState(inferred)
+    }
+    return inferred
   }
 
   /**
@@ -210,14 +234,16 @@ export class ProfileStateService {
    * @returns A promise that resolves to the preparation result.
    */
   async prepareForNewLoginChat(): Promise<{ removedAuthFile: boolean }> {
-    await this.setActiveProfileIdInState(undefined)
+    await this.deps.globalState.update(this.initializedKey(), true)
     this.deps.resetSyncCache()
 
     if (!this.deps.hasActiveCodexAuthFile()) {
+      await this.setActiveProfileIdInState(undefined)
       return { removedAuthFile: false }
     }
 
     this.deps.deleteActiveCodexAuthFile()
+    await this.setActiveProfileIdInState(undefined)
 
     return { removedAuthFile: true }
   }
@@ -255,53 +281,85 @@ export class ProfileStateService {
    */
   async setActiveProfileId(profileId: string | undefined): Promise<boolean> {
     const prev = await this.getActiveProfileId()
+    const baselineSnapshot = this.deps.captureLiveAuthSnapshot?.()
+    const baselineRevision =
+      baselineSnapshot?.revision ?? this.deps.readLiveAuthRevision?.()
 
-    let authData: AuthData | null = null
-    if (profileId) {
-      authData = await this.deps.loadAuthData(profileId)
-      if (!authData) {
-        authData = await this.deps.recoverMissingTokens(profileId)
-        if (!authData) {
-          return false
-        }
-      }
+    if (
+      profileId &&
+      !(await this.deps.loadAuthData(profileId)) &&
+      !(await this.deps.recoverMissingTokens(profileId))
+    ) {
+      return false
     }
 
-    if (prev && profileId && prev === profileId) {
-      if (!authData) {
+    if (prev && profileId) {
+      await this.deps.preserveStoredProfileAuthFromLive(prev)
+    }
+    const publish = async () => {
+      if (!profileId) {
+        await this.setActiveProfileIdInState(undefined)
+        return true
+      }
+      // Recovery/preservation can await UI or storage. Reload under the store
+      // lock so maintenance cannot rotate the selected bundle before publication.
+      const latest = await this.deps.loadAuthData(profileId)
+      if (!latest) {
         return false
       }
-      const selectedProfile = await this.deps.getProfile(profileId)
-      const liveAuth = await this.deps.loadLiveCodexAuthData()
-      if (selectedProfile && liveAuth) {
-        if (
-          matchesPreservationIdentityForProfile(
-            selectedProfile,
-            liveAuth,
-            authData,
-          )
-        ) {
-          if (shouldReplaceStoredProfileAuthWithLive(authData, liveAuth)) {
-            await this.deps.syncProfileAuthToCodexAuthFile(profileId, authData)
-          }
-          return true
-        }
+      const live = await this.deps.loadLiveCodexAuthData()
+      const selected = await this.deps.getProfile(profileId)
+      if (
+        selected &&
+        live &&
+        matchesPreservationIdentityForProfile(selected, live, latest) &&
+        shouldReplaceStoredProfileAuthWithLive(latest, live)
+      ) {
+        throw new Error(
+          'Live credentials changed during switching. Retry to preserve the newer login.',
+        )
       }
-      this.deps.syncProfileAuthToCodexAuthFile(profileId, authData)
+      const previousLast = await this.getLastProfileId()
+      if (
+        this.deps.readLiveAuthRevision &&
+        this.deps.readLiveAuthRevision() !== baselineRevision
+      ) {
+        throw new Error(
+          'The live login changed while switching. Retry to preserve the current account.',
+        )
+      }
+      // Publish first. A failed file write must not commit a new selection.
+      this.deps.syncProfileAuthToCodexAuthFile(profileId, latest)
+      const publishedRevision = this.deps.readLiveAuthRevision?.()
+      try {
+        await this.setActiveProfileIdInState(profileId)
+        if (prev && prev !== profileId) {
+          await this.setLastProfileId(prev)
+        }
+        await this.deps.globalState.update(this.initializedKey(), true)
+      } catch (error) {
+        if (
+          !this.deps.readLiveAuthRevision ||
+          this.deps.readLiveAuthRevision() === publishedRevision
+        ) {
+          if (baselineSnapshot) {
+            baselineSnapshot.restore()
+          } else if (live) {
+            this.deps.syncProfileAuthToCodexAuthFile(prev || profileId, live)
+          } else {
+            this.deps.deleteActiveCodexAuthFile()
+          }
+        }
+        this.deps.resetSyncCache()
+        await this.setActiveProfileIdInState(prev)
+        await this.setLastProfileId(previousLast)
+        throw error
+      }
       return true
     }
-
-    if (prev && profileId && prev !== profileId) {
-      await this.deps.preserveStoredProfileAuthFromLive(prev)
-      await this.setLastProfileId(prev)
-    }
-
-    await this.setActiveProfileIdInState(profileId)
-
-    if (profileId && authData) {
-      this.deps.syncProfileAuthToCodexAuthFile(profileId, authData)
-    }
-    return true
+    return this.deps.withCredentialsLock
+      ? this.deps.withCredentialsLock(publish)
+      : publish()
   }
 
   /**

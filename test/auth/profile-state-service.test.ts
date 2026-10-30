@@ -263,8 +263,8 @@ test('ProfileStateService toggleLastProfileId swaps active and last ids', async 
         ? makeProfile(profileId)
         : undefined,
     loadAuthData: async (profileId: string) => makeAuth(profileId),
-    loadLiveCodexAuthData: async () => null,
-    inferActiveProfileIdFromAuthFile: async () => undefined,
+    loadLiveCodexAuthData: async () => makeAuth('active'),
+    inferActiveProfileIdFromAuthFile: async () => 'active',
     recoverMissingTokens: async () => null,
     preserveStoredProfileAuthFromLive: async () => undefined,
     syncProfileAuthToCodexAuthFile: async () => undefined,
@@ -413,4 +413,18 @@ test('ProfileStateService getActiveProfileId syncs remote inferred auth back to 
 
   assert.equal(await service.getActiveProfileId(), 'inferred')
   assert.deepEqual(sharedWrites, ['inferred'])
+})
+
+test('empty remote active markers are stable during repeated logged-out reads', async () => {
+  const { service, sharedWrites, deletes } = makeService({
+    isRemoteFilesMode: () => true,
+    readSharedActiveProfile: () => '',
+    hasHomeBeenInitialized: () => true,
+    loadLiveCodexAuthData: async () => null,
+    hasActiveCodexAuthFile: () => false,
+  })
+  assert.equal(await service.getActiveProfileId(), undefined)
+  assert.equal(await service.getActiveProfileId(), undefined)
+  assert.deepEqual(sharedWrites, [])
+  assert.deepEqual(deletes, [])
 })

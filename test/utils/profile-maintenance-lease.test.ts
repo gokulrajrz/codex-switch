@@ -1,3 +1,4 @@
+import { withTestMutex } from '../helpers/mutex'
 /** Tests for profile-maintenance-lease. */
 import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -93,6 +94,8 @@ function makeLease(
 ) {
   return new MaintenanceLease(leaseFile, diagnostics, {
     fs,
+    withLock: (action) => withTestMutex(fs, action),
+    isProcessAlive: () => false,
     now: () => clock.value,
     uuid: () => `id-${uuidCounter++}`,
     staleMs: 60_000,
@@ -283,7 +286,7 @@ test('heartbeat survives a failed atomic write and keeps ownership', async () =>
   fs.onRename = () => {
     throw errno('EPERM')
   }
-  assert.equal(await lease.heartbeat(owner, progress), true)
+  assert.equal(await lease.heartbeat(owner, progress), false)
 })
 
 test('release tolerates unlink failures', async () => {
@@ -320,6 +323,8 @@ test('lease applies default dependencies', async () => {
   const fs = new FakeLeaseFs()
   const lease = new MaintenanceLease('/scope/maintenance.lease', diagnostics, {
     fs,
+    withLock: (action) => withTestMutex(fs, action),
+    isProcessAlive: () => false,
     debugLog: () => undefined,
   })
   const owner = await lease.tryAcquire(progress)
@@ -336,7 +341,7 @@ test('non-Error failures in best-effort paths are tolerated', async () => {
   heartbeatFs.onRename = () => {
     throw 'rename string failure'
   }
-  assert.equal(await heartbeatLease.heartbeat(heartbeatOwner, progress), true)
+  assert.equal(await heartbeatLease.heartbeat(heartbeatOwner, progress), false)
 
   // Release unlink failure with a non-Error rejection.
   const releaseFs = new FakeLeaseFs()
@@ -379,11 +384,13 @@ test('lease works against a real temporary filesystem', async () => {
   try {
     const a = new MaintenanceLease(leaseFile, diagnostics, {
       fs: realFs,
+      isProcessAlive: () => false,
       now: () => clock.value,
       staleMs: 60_000,
     })
     const b = new MaintenanceLease(leaseFile, diagnostics, {
       fs: realFs,
+      isProcessAlive: () => false,
       now: () => clock.value,
       staleMs: 60_000,
     })
@@ -398,6 +405,54 @@ test('lease works against a real temporary filesystem', async () => {
     assert.equal(await a.stillOwns(owner), false)
 
     await b.release(takeover)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a live maintenance owner cannot be replaced after heartbeat expiry', async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'codex-switch-live-lease-'))
+  const clock = makeClock()
+  try {
+    const leaseFile = path.join(dir, 'maintenance.lease')
+    const liveDiagnostics = { ...diagnostics, pid: process.pid }
+    const owner = new MaintenanceLease(leaseFile, liveDiagnostics, {
+      fs: realFs,
+      now: () => clock.value,
+    })
+    const contender = new MaintenanceLease(leaseFile, liveDiagnostics, {
+      fs: realFs,
+      now: () => clock.value,
+    })
+    const acquired = await owner.tryAcquire(progress)
+    assert.ok(acquired)
+    clock.value += 3600000
+    assert.equal(await contender.tryAcquire(progress), null)
+    assert.equal(await owner.stillOwns(acquired), true)
+    await owner.release(acquired)
+    assert.ok(await contender.tryAcquire(progress))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('foreign-namespace maintenance leases are not stolen using local PID probes', async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'codex-switch-foreign-lease-'))
+  const leaseFile = path.join(dir, 'maintenance.lease')
+  try {
+    const content = JSON.stringify({
+      leaseId: 'foreign',
+      heartbeatAt: 0,
+      pid: 2147483647,
+      processDomain: 'foreign-namespace',
+    })
+    await realFs.writeFile(leaseFile, content)
+    const lease = new MaintenanceLease(leaseFile, diagnostics, {
+      fs: realFs,
+      now: () => 3600000,
+    })
+    assert.equal(await lease.tryAcquire(progress), null)
+    assert.equal(await realFs.readFile(leaseFile, 'utf8'), content)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

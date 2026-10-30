@@ -16,6 +16,16 @@ import {
  * Dependencies for ProfileAuthSyncService.
  */
 interface ProfileAuthSyncServiceDeps {
+  /** Conditional store commit for live token capture. */
+  replaceProfileAuthIfFresher?: (
+    id: string,
+    live: AuthData,
+    baseline: AuthData | null,
+  ) => Promise<string>
+  /** Path of the current credential metadata index. */
+  getProfilesPath?: () => string
+  /** Only first-time custom-home bootstrap may publish credentials automatically. */
+  bootstrapEmptyHome?: () => Promise<void>
   /** Function to get the currently active profile ID. */
   getActiveProfileId: () => Promise<string | undefined>
   /** Function to retrieve a profile by ID. */
@@ -81,6 +91,7 @@ export class ProfileAuthSyncService {
         (await maybeReplaceProfileAuthWithLive(
           {
             loadAuthData: (profileId) => this.deps.loadAuthData(profileId),
+            replaceProfileAuthIfFresher: this.deps.replaceProfileAuthIfFresher,
             replaceProfileAuth: (profileId, authData) =>
               this.deps.replaceProfileAuth(profileId, authData),
           },
@@ -95,6 +106,7 @@ export class ProfileAuthSyncService {
         {
           listProfiles: () => this.deps.listProfiles(),
           loadAuthData: (profileId) => this.deps.loadAuthData(profileId),
+          replaceProfileAuthIfFresher: this.deps.replaceProfileAuthIfFresher,
         },
         liveAuth,
         activeProfile ? activeProfile.id : undefined,
@@ -107,6 +119,7 @@ export class ProfileAuthSyncService {
         await maybeReplaceProfileAuthWithLive(
           {
             loadAuthData: (profileId) => this.deps.loadAuthData(profileId),
+            replaceProfileAuthIfFresher: this.deps.replaceProfileAuthIfFresher,
             replaceProfileAuth: (profileId, authData) =>
               this.deps.replaceProfileAuth(profileId, authData),
           },
@@ -123,7 +136,11 @@ export class ProfileAuthSyncService {
       return
     }
 
-    await this.deps.syncActiveProfileToCodexAuthFile()
+    if (this.deps.bootstrapEmptyHome) {
+      await this.deps.bootstrapEmptyHome()
+    } else {
+      await this.deps.setActiveProfileIdInState(undefined)
+    }
   }
 
   /**
@@ -182,6 +199,19 @@ export class ProfileAuthSyncService {
     authWatcher.onDidDelete(fire)
     disposables.push(authWatcher)
 
+    const metadataPath = this.deps.getProfilesPath?.()
+    if (metadataPath && !this.deps.isRemoteFilesMode()) {
+      const watcher = this.deps.createFileSystemWatcher(
+        this.deps.relativePattern(
+          this.deps.uriFile(path.dirname(metadataPath)),
+          'profiles.json',
+        ),
+      )
+      watcher.onDidCreate(fire)
+      watcher.onDidChange(fire)
+      watcher.onDidDelete(fire)
+      disposables.push(watcher)
+    }
     if (this.deps.isRemoteFilesMode()) {
       const sharedRoot = this.deps.uriFile(getSharedStoreRoot())
       const profilesWatcher = this.deps.createFileSystemWatcher(

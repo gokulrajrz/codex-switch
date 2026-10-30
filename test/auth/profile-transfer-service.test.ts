@@ -260,3 +260,24 @@ test('ProfileTransferService rejects unsupported transfer payloads', async () =>
     /profiles must be an array\./,
   )
 })
+
+test('transfer reports failed replacement and canceled activation instead of success', async () => {
+  const profile = makeProfile('A', 'Alpha')
+  const entry = { profile, tokens: makeTokens('A') }
+  for (const replaceOk of [false, true]) {
+    const service = new ProfileTransferService({
+      findDuplicateProfile: async () => profile,
+      replaceProfileAuth: async () => replaceOk,
+      setActiveProfileId: async () => false,
+    } as never)
+    await assert.rejects(
+      service.importProfilesFromTransfer({
+        format: 'codex-switch-profile-export',
+        version: 1,
+        profiles: [entry],
+        activeProfileId: 'A',
+      }),
+      replaceOk ? /active profile could not/ : /Could not update/,
+    )
+  }
+})

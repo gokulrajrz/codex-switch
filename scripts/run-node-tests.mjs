@@ -40,12 +40,30 @@ if (coverageEnabled) {
     '--test-coverage-branches=100',
   )
 }
-args.push(...testFiles)
+// Production-adapter regressions exercise real temporary files and the manager
+// facade. Run them as a separate gate instead of accidentally widening the
+// existing 100% helper-coverage contract to every unused facade getter.
+const runtimeTests = testFiles.filter((file) =>
+  file.endsWith('.runtime.test.js'),
+)
+args.push(
+  ...(coverageEnabled
+    ? testFiles.filter((file) => !runtimeTests.includes(file))
+    : testFiles),
+)
 
 const result = spawnSync(process.execPath, args, {
   stdio: 'inherit',
 })
 
+if (result.status === 0 && coverageEnabled && runtimeTests.length > 0) {
+  const runtimeResult = spawnSync(
+    process.execPath,
+    ['--test', '--test-isolation=none', ...runtimeTests],
+    { stdio: 'inherit' },
+  )
+  process.exit(runtimeResult.status ?? 1)
+}
 process.exit(result.status ?? 1)
 
 function ensureVscodeStub(rootDir) {

@@ -246,12 +246,21 @@ export async function syncFromDefaultHomeCommand(
   deps: Pick<
     ProfileManagementCommandDeps,
     | 'profileManager'
+    | 'promptDeps'
     | 'onAuthChanged'
     | 'maybeRestartAfterProfileSwitch'
     | 'showInformationMessage'
     | 'translate'
   >,
 ): Promise<void> {
+  if (
+    !(await ensureLiveAuthIsSavedBeforeReplacing(
+      deps.promptDeps,
+      deps.translate('sync the default profile'),
+    ))
+  ) {
+    return
+  }
   const profileId = await deps.profileManager.syncActiveProfileFromDefaultHome()
   if (!profileId) {
     deps.showInformationMessage(

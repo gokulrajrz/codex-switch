@@ -145,8 +145,12 @@ function createProfileMaintenanceService(
     },
     fs: fsPromises,
     profileManager,
-    runProfileMaintenance: (manager, profile) =>
-      profileRateLimitService.runProfileMaintenance(manager, profile),
+    runProfileMaintenance: (manager, profile, canCommit) =>
+      profileRateLimitService.runProfileMaintenance(
+        manager,
+        profile,
+        canCommit,
+      ),
     getIntervalSeconds: getRateLimitAutoRefreshIntervalSeconds,
     debugLog,
   })

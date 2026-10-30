@@ -256,3 +256,56 @@ test('importProfiles stops when live auth replacement is rejected', async () => 
   await importProfiles(deps as any)
   assert.deepEqual((deps.calls as string[]).length, 0)
 })
+
+test('selected-file import uses selected credentials instead of the live file', async () => {
+  const imported: string[] = []
+  const deps = makeFileDeps({
+    promptDeps: makePromptDeps({
+      getActiveCodexAuthPath: () => '/tmp/live.json',
+      loadAuthDataFromFile: async (file: string) => ({
+        idToken: 'id',
+        accessToken: 'access',
+        refreshToken: 'refresh',
+        planType: 'plus',
+        email: file.endsWith('input.json')
+          ? 'selected@example.test'
+          : 'live@example.test',
+      }),
+      preserveLiveAuthForMatchingProfile: async () => ({ status: 'saved' }),
+      createProfile: async (_name: string, data: { email: string }) => {
+        imported.push(data.email)
+        return { id: 'selected' }
+      },
+    }),
+  })
+  await addFromFile(deps as any)
+  assert.deepEqual(imported, ['selected@example.test'])
+})
+
+test(
+  'export leaves existing parent directory permissions unchanged',
+  { skip: process.platform === 'win32' },
+  async () => {
+    const root = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'codex-switch-export-mode-'),
+    )
+    try {
+      fs.chmodSync(root, 0o755)
+      await exportProfiles(
+        makeFileDeps({
+          showSaveDialog: async () => ({
+            fsPath: path.join(root, 'export.json'),
+          }),
+          showWarningMessage: async () => 'Export',
+        }) as any,
+      )
+      assert.equal(fs.statSync(root).mode & 0o777, 0o755)
+      assert.equal(
+        fs.statSync(path.join(root, 'export.json')).mode & 0o777,
+        0o600,
+      )
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  },
+)

@@ -6,6 +6,12 @@ import { matchesPreservationIdentityForProfile } from './preservation-identity'
 export interface ProfileAuthLookupDependencies {
   /** Loads stored auth data for a profile ID. */
   loadAuthData: (profileId: string) => Promise<AuthData | null>
+  /** Production writes recheck identity and generation under the store lock. */
+  replaceProfileAuthIfFresher?: (
+    profileId: string,
+    live: AuthData,
+    baseline: AuthData | null,
+  ) => Promise<string>
 }
 
 /** Replaces profile auth with live auth if identity matches and refresh policy permits. */
@@ -28,6 +34,23 @@ export async function maybeReplaceProfileAuthWithLive(
     return false
   }
 
+  if (deps.replaceProfileAuthIfFresher) {
+    const outcome = await deps.replaceProfileAuthIfFresher(
+      profile.id,
+      liveAuth,
+      storedAuth,
+    )
+    if (
+      outcome === 'failed' ||
+      outcome === 'missing' ||
+      outcome === 'conflict'
+    ) {
+      throw new Error(
+        'Could not preserve current credentials. Retry after the concurrent profile change.',
+      )
+    }
+    return outcome === 'updated'
+  }
   return deps.replaceProfileAuth(profile.id, liveAuth)
 }
 

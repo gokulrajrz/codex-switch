@@ -13,6 +13,25 @@ and this project adheres to [Semantic Versioning][].
 ### Removed
 -->
 
+## Unreleased
+
+### Fixed
+
+* VSIX packaging explicitly excludes npm dependencies for this Node/VS Code-only
+  extension, avoiding dependency-discovery failures in older packaging tools.
+* Profile switching now preserves newer credentials, serializes writes, and
+  restores the prior auth file when selection persistence fails.
+* Active account state follows external logins without restoring saved auth
+  over logout, unsupported credentials, or deliberate new-login resets.
+* Shared profile maintenance coordinates across IDE products and retains live
+  lock owners, with conditional token commits and safer stale-owner recovery.
+* Usage refresh errors no longer discard tokens rotated during the request.
+* Selected-file import uses the chosen credentials, exports preserve directory
+  permissions, and preservation/import failures are reported accurately.
+* Workspace account matching and default-home switching now enforce account
+  boundaries and unsaved-login protection. Unchanged remote selection markers
+  no longer trigger reconciliation loops.
+
 ## [1.4.4][] - 2026-09-03
 
 ### Changed
